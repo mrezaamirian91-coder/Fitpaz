@@ -30,6 +30,7 @@ def init_db():
                 user_id INTEGER,
                 recipe_name TEXT,
                 rating TEXT,
+                provider TEXT,
                 created_at TEXT
             )
         """)
@@ -39,10 +40,19 @@ def init_db():
                 user_id INTEGER,
                 recipe_name TEXT,
                 calories INTEGER,
+                provider TEXT,
                 created_at TEXT
             )
         """)
         conn.commit()
+
+        # migration امن برای دیتابیس‌هایی که قبلاً بدون ستون provider ساخته شدن
+        for table in ("feedback", "recipe_log"):
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN provider TEXT")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # ستون از قبل وجود داره، مشکلی نیست
 
 
 @contextmanager
@@ -100,20 +110,20 @@ def days_since_last_active(user_id: int) -> int:
     return delta.days
 
 
-def log_feedback(user_id: int, recipe_name: str, rating: str):
+def log_feedback(user_id: int, recipe_name: str, rating: str, provider: str = None):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO feedback (user_id, recipe_name, rating, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, recipe_name, rating, datetime.utcnow().isoformat()),
+            "INSERT INTO feedback (user_id, recipe_name, rating, provider, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, recipe_name, rating, provider, datetime.utcnow().isoformat()),
         )
         conn.commit()
 
 
-def log_recipe(user_id: int, recipe_name: str, calories: int):
+def log_recipe(user_id: int, recipe_name: str, calories: int, provider: str = None):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO recipe_log (user_id, recipe_name, calories, created_at) VALUES (?, ?, ?, ?)",
-            (user_id, recipe_name, calories, datetime.utcnow().isoformat()),
+            "INSERT INTO recipe_log (user_id, recipe_name, calories, provider, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, recipe_name, calories, provider, datetime.utcnow().isoformat()),
         )
         conn.commit()
 
@@ -141,3 +151,20 @@ def get_all_active_users_for_reminder():
             "SELECT user_id FROM users WHERE allow_daily_anchor = 1"
         ).fetchall()
     return [r["user_id"] for r in rows]
+
+
+def get_feedback_stats_by_provider() -> dict:
+    """آماره‌ی خام فیدبک به تفکیک مدل (OpenAI / Gemini) - برای تست A/B آینده.
+    خروجی نمونه: {"openai": {"good": 12, "bad": 3}, "gemini": {"good": 8, "bad": 5}}"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT provider, rating, COUNT(*) as cnt FROM feedback GROUP BY provider, rating"
+        ).fetchall()
+
+    stats = {}
+    for r in rows:
+        provider = r["provider"] or "unknown"
+        stats.setdefault(provider, {"good": 0, "bad": 0})
+        if r["rating"] in ("good", "bad"):
+            stats[provider][r["rating"]] = r["cnt"]
+    return stats

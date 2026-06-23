@@ -1,5 +1,4 @@
 import os
-import json
 import base64
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,17 +10,13 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from openai import OpenAI
-
 import db
+import ai_provider
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 # ---------- شروع و پروفایل ----------
@@ -189,30 +184,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await wait_msg.edit_text("چند تا ایده جالب داریم برات... 🍽️")
 
-        vision_response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_b64}"}},
-                        {
-                            "type": "text",
-                            "text": (
-                                "این عکس از مواد غذایی است. لیست مواد قابل تشخیص را به فارسی "
-                                "و به صورت JSON برگردان. فقط JSON بده بدون توضیح اضافه. "
-                                'فرمت: {"ingredients": ["ماده۱", "ماده۲"], "confidence": "high/medium/low"}'
-                            ),
-                        },
-                    ],
-                }
-            ],
-            max_tokens=500,
-        )
-
-        vision_text = vision_response.choices[0].message.content
-        vision_text = vision_text.replace("```json", "").replace("```", "").strip()
-        vision_data = json.loads(vision_text)
+        vision_data, vision_provider = ai_provider.analyze_photo(photo_b64)
         ingredients = vision_data.get("ingredients", [])
         confidence = vision_data.get("confidence", "high")
 
@@ -248,15 +220,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
   ]
 }}"""
 
-        recipe_response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": recipe_prompt}],
-            max_tokens=1500,
-        )
-
-        recipe_text = recipe_response.choices[0].message.content
-        recipe_text = recipe_text.replace("```json", "").replace("```", "").strip()
-        recipes_data = json.loads(recipe_text)
+        recipes_data, recipe_provider = ai_provider.generate_recipes(recipe_prompt)
         recipes = recipes_data.get("recipes", [])
 
         new_usage_count = user["usage_count"] + 1
@@ -264,7 +228,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(user_id, usage_count=new_usage_count, streak=new_streak)
 
         if recipes:
-            db.log_recipe(user_id, recipes[0]["name"], recipes[0].get("calories", 0))
+            db.log_recipe(user_id, recipes[0]["name"], recipes[0].get("calories", 0), provider=recipe_provider)
 
         ingredients_text = " | ".join(ingredients)
         message = f"✅ مواد تشخیص داده شد:\n{ingredients_text}\n\n🍽️ پیشنهادهای غذایی:\n\n"
@@ -279,6 +243,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(f"دستور پخت {recipe['name']} 👨‍🍳", callback_data=f"recipe_{i}")])
 
         context.user_data["last_recipes"] = recipes
+        context.user_data["last_recipe_provider"] = recipe_provider
 
         if new_usage_count >= 3 and not user["is_subscribed"]:
             keyboard.append([InlineKeyboardButton("🌟 اشتراک ویژه", callback_data="subscribe")])
@@ -348,7 +313,8 @@ async def handle_recipe_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         index = int(parts[2]) if len(parts) > 2 else 0
         recipes = context.user_data.get("last_recipes", [])
         recipe_name = recipes[index]["name"] if index < len(recipes) else "نامشخص"
-        db.log_feedback(user_id, recipe_name, fb_type)
+        provider_used = context.user_data.get("last_recipe_provider", "unknown")
+        db.log_feedback(user_id, recipe_name, fb_type, provider=provider_used)
 
         if fb_type == "good":
             await query.edit_message_text("ممنون! خوشحالم که پسندیدی 😊\n\nهر وقت خواستی دوباره عکس بفرست.")
