@@ -185,12 +185,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await wait_msg.edit_text("چند تا ایده جالب داریم برات... 🍽️")
 
         vision_data, vision_provider = ai_provider.analyze_photo(photo_b64)
-        ingredients = vision_data.get("ingredients", [])
+        items = vision_data.get("items", [])
         confidence = vision_data.get("confidence", "high")
 
-        if not ingredients:
+        # سازگاری با فرمت قدیمی (ingredients) در صورت وجود
+        if not items and "ingredients" in vision_data:
+            items = [{"name": ing, "quantity": "", "calories": 0} for ing in vision_data["ingredients"]]
+
+        if not items:
             await wait_msg.edit_text("نتونستم مواد غذایی رو تشخیص بدم. یه عکس واضح‌تر بفرست 📸")
             return
+
+        # ساخت لیست اسامی برای پرامپت غذا
+        ingredients = [item["name"] for item in items]
+        total_calories = sum(item.get("calories", 0) for item in items)
 
         goal_text = user.get("goal") or "بدون هدف خاص"
         restrictions = "، ".join(user.get("restrictions", [])) or "ندارم"
@@ -230,8 +238,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if recipes:
             db.log_recipe(user_id, recipes[0]["name"], recipes[0].get("calories", 0), provider=recipe_provider)
 
-        ingredients_text = " | ".join(ingredients)
-        message = f"✅ مواد تشخیص داده شد:\n{ingredients_text}\n\n🍽️ پیشنهادهای غذایی:\n\n"
+        # نمایش ریز کالری هر ماده
+        items_text = ""
+        for item in items:
+            qty = f" ({item['quantity']})" if item.get("quantity") else ""
+            cal = f" — {item['calories']} کالری" if item.get("calories") else ""
+            items_text += f"• {item['name']}{qty}{cal}\n"
+
+        total_cal_text = f"\n🔥 *جمع تخمینی: {total_calories} کالری*" if total_calories > 0 else ""
+
+        message = f"✅ *مواد تشخیص داده شد:*\n\n{items_text}{total_cal_text}\n\n🍽️ *پیشنهادهای غذایی:*\n\n"
 
         keyboard = []
         for i, recipe in enumerate(recipes[:3]):
@@ -316,13 +332,58 @@ async def handle_recipe_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         provider_used = context.user_data.get("last_recipe_provider", "unknown")
         db.log_feedback(user_id, recipe_name, fb_type, provider=provider_used)
 
+        user = db.get_user(user_id)
+        has_profile = user.get("goal") is not None
+
         if fb_type == "good":
-            await query.edit_message_text("ممنون! خوشحالم که پسندیدی 😊\n\nهر وقت خواستی دوباره عکس بفرست.")
+            base_text = "ممنون! خوشحالم که پسندیدی 😊"
         else:
-            await query.edit_message_text("فهمیدم! دفعه بهتر می‌شه 💪\n\nدوباره عکس بفرست تا گزینه دیگه‌ای پیشنهاد بدم.")
+            base_text = "فهمیدم! دفعه بهتر می‌شه 💪"
+
+        # قلاب به پروفایل — فقط برای کسی که هنوز پروفایل نساخته
+        if not has_profile:
+            keyboard = [[
+                InlineKeyboardButton("بله، بهترش کن! ✨", callback_data="start_profile"),
+                InlineKeyboardButton("نه، ممنون", callback_data="skip_profile"),
+            ]]
+            await query.edit_message_text(
+                f"{base_text}\n\n"
+                "💡 اگه بگم هدفت چیه (مثلاً کاهش وزن یا عضله‌سازی)، "
+                "پیشنهادهام رو دقیق‌تر و شخصی‌تر می‌کنم.\n\n"
+                "می‌خوای امتحان کنیم؟",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+            )
+        else:
+            await query.edit_message_text(
+                f"{base_text}\n\nهر وقت خواستی دوباره عکس بفرست. 📸"
+            )
 
     elif query.data == "take_photo":
         await query.edit_message_text("📸 عکس از مواد غذایی‌ات بفرست!\n\nسعی کن همه مواد توی عکس دیده بشن.")
+
+    elif query.data == "start_profile":
+        # کاربر قبول کرد پروفایل بسازه — شروع فلوی پروفایل
+        user_id = query.from_user.id
+        db.update_user(user_id, step="ask_goal")
+        keyboard = [
+            [
+                InlineKeyboardButton("کاهش وزن 🔽", callback_data="goal_lose"),
+                InlineKeyboardButton("عضله‌سازی 💪", callback_data="goal_muscle"),
+            ],
+            [
+                InlineKeyboardButton("حفظ وزن ⚖️", callback_data="goal_maintain"),
+                InlineKeyboardButton("فقط غذا بپزم 🍳", callback_data="goal_none"),
+            ],
+        ]
+        await query.edit_message_text(
+            "عالیه! یه سوال سریع —\n\nهدف اصلیت چیه؟",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    elif query.data == "skip_profile":
+        await query.edit_message_text(
+            "باشه! هر وقت خواستی /start رو بزن تا پروفایلت رو بسازیم. 📸\n\nتا اون موقع هر وقت عکس فرستادی کمکت می‌کنم."
+        )
 
 
 # ---------- دستور پیشرفت ----------
