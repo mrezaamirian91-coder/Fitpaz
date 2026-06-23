@@ -32,6 +32,34 @@ def _clean_json(text: str) -> str:
     return text.replace("```json", "").replace("```", "").strip()
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """عدد کالری رو حتی اگه مدل به‌جای عدد، رشته یا اعداد فارسی برگردونه، امن تبدیل می‌کنه."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        persian_to_english = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+        cleaned = "".join(ch for ch in value.translate(persian_to_english) if ch.isdigit())
+        if cleaned:
+            return int(cleaned)
+    return default
+
+
+def _normalize_vision_data(data: dict) -> dict:
+    """اطمینان از اینکه هر آیتم name/quantity/calories تمیز و قابل‌اعتماد داره."""
+    items = data.get("items", [])
+    normalized = []
+    for item in items:
+        normalized.append({
+            "name": str(item.get("name", "")).strip(),
+            "quantity": str(item.get("quantity", "")).strip(),
+            "calories": _safe_int(item.get("calories", 0)),
+        })
+    data["items"] = normalized
+    return data
+
+
 def _call_openai_vision(photo_b64: str, prompt: str) -> dict:
     response = _openai_client.chat.completions.create(
         model=OPENAI_MODEL,
@@ -96,16 +124,22 @@ def analyze_photo(photo_b64: str) -> tuple[dict, str]:
         "مقادیر کالری باید واقع‌بینانه و بر اساس مقدار تخمینی در عکس باشد."
     )
 
+    data = None
+    provider = None
+
     if _openai_client:
         try:
-            return _call_openai_vision(photo_b64, prompt), "openai"
+            data, provider = _call_openai_vision(photo_b64, prompt), "openai"
         except Exception as e:
             logger.warning(f"OpenAI vision failed, falling back to Gemini: {e}")
 
-    if _gemini_client:
-        return _call_gemini_vision(photo_b64, prompt), "gemini"
+    if data is None and _gemini_client:
+        data, provider = _call_gemini_vision(photo_b64, prompt), "gemini"
 
-    raise RuntimeError("هیچ سرویس هوش مصنوعی‌ای پیکربندی نشده (نه OpenAI نه Gemini)")
+    if data is None:
+        raise RuntimeError("هیچ سرویس هوش مصنوعی‌ای پیکربندی نشده (نه OpenAI نه Gemini)")
+
+    return _normalize_vision_data(data), provider
 
 
 def generate_recipes(prompt: str) -> tuple[dict, str]:

@@ -196,12 +196,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await wait_msg.edit_text("نتونستم مواد غذایی رو تشخیص بدم. یه عکس واضح‌تر بفرست 📸")
             return
 
-        # ساخت لیست اسامی برای پرامپت غذا
-        ingredients = [item["name"] for item in items]
         total_calories = sum(item.get("calories", 0) for item in items)
+
+        # ذخیره‌ی ریز مواد تشخیص‌داده‌شده برای استفاده‌ی بعدی در فلوها و تحلیل‌های محصول
+        db.log_ingredients(user_id, items, provider=vision_provider)
 
         goal_text = user.get("goal") or "بدون هدف خاص"
         restrictions = "، ".join(user.get("restrictions", [])) or "ندارم"
+
+        items_breakdown = "\n".join(
+            f"- {item['name']}" + (f" ({item['quantity']})" if item["quantity"] else "") + f": {item['calories']} کالری"
+            for item in items
+        )
 
         recipe_prompt = f"""تو یک آشپز هوشمند ایرانی هستی.
 
@@ -209,9 +215,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - هدف: {goal_text}
 - محدودیت غذایی: {restrictions}
 
-مواد موجود: {", ".join(ingredients)}
+مواد موجود (به همراه کالری تخمینی هرکدوم در حالت خام):
+{items_breakdown}
+
+جمع کالری مواد خام: {total_calories} کالری
 
 سه پیشنهاد غذایی بده که با این مواد بشه پخت، به ترتیب اولویت با توجه به هدف کاربر.
+کالری نهایی هر غذای پیشنهادی باید با توجه به همین مواد و روش پخت محاسبه شود و با جمع کالری مواد خام هم‌خوان باشد
+(لزوماً برابر نیست، چون روغن یا افزودنی‌های پخت می‌تواند کالری را تغییر دهد، اما باید منطقی و قابل توجیه باشد).
 پاسخ را ONLY به صورت JSON برگردان بدون هیچ متن اضافی:
 
 {{

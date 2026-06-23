@@ -44,6 +44,17 @@ def init_db():
                 created_at TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingredient_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                item_name TEXT,
+                quantity TEXT,
+                calories INTEGER,
+                provider TEXT,
+                created_at TEXT
+            )
+        """)
         conn.commit()
 
         # migration امن برای دیتابیس‌هایی که قبلاً بدون ستون provider ساخته شدن
@@ -125,6 +136,22 @@ def log_recipe(user_id: int, recipe_name: str, calories: int, provider: str = No
             "INSERT INTO recipe_log (user_id, recipe_name, calories, provider, created_at) VALUES (?, ?, ?, ?, ?)",
             (user_id, recipe_name, calories, provider, datetime.utcnow().isoformat()),
         )
+        conn.commit()
+
+
+def log_ingredients(user_id: int, items: list, provider: str = None):
+    """ذخیره‌ی ریز هر ماده‌ی تشخیص‌داده‌شده از روی عکس (اسم، مقدار، کالری) برای استفاده‌ی بعدی
+    در تحلیل‌ها، شخصی‌سازی و شاخه‌های دیگر محصول."""
+    if not items:
+        return
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        for item in items:
+            conn.execute(
+                "INSERT INTO ingredient_log (user_id, item_name, quantity, calories, provider, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, item.get("name", ""), item.get("quantity", ""), item.get("calories", 0), provider, now),
+            )
         conn.commit()
 
 
