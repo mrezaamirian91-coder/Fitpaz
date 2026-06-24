@@ -23,6 +23,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o"
 GEMINI_MODEL = "gemini-2.5-flash"
+IMAGE_MODEL = "gpt-image-1"
+
+# لحظه‌ی "وای" - عکس واقعی غذا. پیش‌فرض خاموشه (پلن رایگان) چون هزینه دارد و رایگان نیست.
+# وقتی آماده بودی هزینه‌ش رو بپذیری، فقط توی Railway مقدار ENABLE_RECIPE_IMAGES رو true کن - بدون نیاز به تغییر کد.
+ENABLE_RECIPE_IMAGES = os.environ.get("ENABLE_RECIPE_IMAGES", "false").lower() == "true"
 
 _openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 _gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -154,3 +159,34 @@ def generate_recipes(prompt: str) -> tuple[dict, str]:
         return _call_gemini_text(prompt), "gemini"
 
     raise RuntimeError("هیچ سرویس هوش مصنوعی‌ای پیکربندی نشده (نه OpenAI نه Gemini)")
+
+
+def generate_recipe_image(recipe_name: str) -> bytes | None:
+    """ساخت یک عکس واقعی و وسوسه‌انگیز از غذای پیشنهادی - لحظه‌ی "وای".
+
+    این فیچر پشت فلگ ENABLE_RECIPE_IMAGES است. تا وقتی این فلگ روی Railway به true
+    تغییر نکنه، این تابع همیشه None برمی‌گردونه و هیچ درخواست/هزینه‌ای ایجاد نمی‌شه
+    (یعنی همین الان توی "پلن رایگان" هستیم، ولی کد آماده‌ی روشن شدنه)."""
+    if not ENABLE_RECIPE_IMAGES:
+        return None
+
+    if not _openai_client:
+        logger.warning("ENABLE_RECIPE_IMAGES فعاله ولی OPENAI_API_KEY تنظیم نشده.")
+        return None
+
+    try:
+        prompt = (
+            f"یک عکس فوق‌العاده واقعی و وسوسه‌انگیز از غذای ایرانی «{recipe_name}»، "
+            "به سبک عکاسی حرفه‌ای رستورانی، نور طبیعی و گرم، روی میز چوبی، از زاویه‌ی کمی از بالا، "
+            "بدون متن و بدون لوگو روی عکس."
+        )
+        result = _openai_client.images.generate(
+            model=IMAGE_MODEL,
+            prompt=prompt,
+            size="1024x1024",
+            quality="low",
+        )
+        return base64.b64decode(result.data[0].b64_json)
+    except Exception as e:
+        logger.warning(f"Recipe image generation failed: {e}")
+        return None

@@ -1,6 +1,7 @@
 import os
 import base64
 import logging
+from datetime import time as dt_time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -17,6 +18,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+ANCHOR_TIME_UTC = os.environ.get("ANCHOR_TIME_UTC", "14:30")  # پیش‌فرض ~۱۸:۰۰ به وقت ایران
+
+
+async def _edit_message(query, text, reply_markup=None, parse_mode="Markdown"):
+    """ادیت امن پیام فعلی - چه پیام متنی باشه چه عکس با کپشن (وقتی فیچر عکس روشنه)."""
+    if query.message.photo:
+        await query.edit_message_caption(caption=text, parse_mode=parse_mode, reply_markup=reply_markup)
+    else:
+        await query.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
 
 
 # ---------- شروع و پروفایل ----------
@@ -203,6 +213,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         goal_text = user.get("goal") or "بدون هدف خاص"
         restrictions = "، ".join(user.get("restrictions", [])) or "ندارم"
+        cuisine_line = f"\n- سبک غذایی ترجیحی: {user['cuisine']}" if user.get("cuisine") else ""
 
         items_breakdown = "\n".join(
             f"- {item['name']}" + (f" ({item['quantity']})" if item["quantity"] else "") + f": {item['calories']} کالری"
@@ -213,7 +224,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 اطلاعات کاربر:
 - هدف: {goal_text}
-- محدودیت غذایی: {restrictions}
+- محدودیت غذایی: {restrictions}{cuisine_line}
 
 مواد موجود (به همراه کالری تخمینی هرکدوم در حالت خام):
 {items_breakdown}
@@ -320,7 +331,21 @@ async def handle_recipe_detail(update: Update, context: ContextTypes.DEFAULT_TYP
                 InlineKeyboardButton("👍 خوب بود", callback_data=f"fb_good_{index}"),
                 InlineKeyboardButton("👎 دوست نداشتم", callback_data=f"fb_bad_{index}"),
             ]]
-            await query.edit_message_text(message, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+            # برای استفاده‌ی بعدی توی فلوی فیدبک، تا متن دستور پخت گم نشه
+            context.user_data["last_recipe_detail_text"] = message
+
+            # لحظه‌ی "وای" - تا فعال نشه (ENABLE_RECIPE_IMAGES) چیزی تولید نمی‌شه و هزینه‌ای ایجاد نمی‌شه
+            image_bytes = ai_provider.generate_recipe_image(recipe["name"])
+            if image_bytes:
+                await query.message.reply_photo(
+                    photo=image_bytes,
+                    caption=message,
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                )
+            else:
+                await query.edit_message_text(message, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "subscribe":
         await query.edit_message_text(
@@ -351,26 +376,56 @@ async def handle_recipe_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             base_text = "فهمیدم! دفعه بهتر می‌شه 💪"
 
-        # قلاب به پروفایل — فقط برای کسی که هنوز پروفایل نساخته
+        # دستور پخت همچنان روی صفحه می‌مونه - پاک نمی‌شه
+        previous_text = context.user_data.get("last_recipe_detail_text", "")
+        combined_text = f"{previous_text}\n\n———\n\n{base_text}"
+
         if not has_profile:
+            # قلاب به پروفایل - برای کسی که هنوز پروفایل نساخته
             keyboard = [[
                 InlineKeyboardButton("بله، بهترش کن! ✨", callback_data="start_profile"),
                 InlineKeyboardButton("نه، ممنون", callback_data="skip_profile"),
             ]]
-            await query.edit_message_text(
-                f"{base_text}\n\n"
+            await _edit_message(
+                query,
+                f"{combined_text}\n\n"
                 "💡 اگه بگم هدفت چیه (مثلاً کاهش وزن یا عضله‌سازی)، "
                 "پیشنهادهام رو دقیق‌تر و شخصی‌تر می‌کنم.\n\n"
                 "می‌خوای امتحان کنیم؟",
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
         else:
-            await query.edit_message_text(
-                f"{base_text}\n\nهر وقت خواستی دوباره عکس بفرست. 📸"
+            # ادامه‌ی فلو بعد از تجربه اول - برای کسی که پروفایل داره
+            keyboard = [[
+                InlineKeyboardButton("📸 عکس جدید بفرستم", callback_data="take_photo"),
+                InlineKeyboardButton("بیشتر بگم درباره خودم 🎯", callback_data="deepen_profile"),
+            ]]
+            await _edit_message(
+                query,
+                f"{combined_text}\n\nمی‌خوای الان چیکار کنیم؟",
+                reply_markup=InlineKeyboardMarkup(keyboard),
             )
 
     elif query.data == "take_photo":
-        await query.edit_message_text("📸 عکس از مواد غذایی‌ات بفرست!\n\nسعی کن همه مواد توی عکس دیده بشن.")
+        await _edit_message(query, "📸 عکس از مواد غذایی‌ات بفرست!\n\nسعی کن همه مواد توی عکس دیده بشن.")
+
+    elif query.data == "deepen_profile":
+        # ادامه‌ی فلو بعد از تجربه اول - شخصی‌سازی عمیق‌تر
+        keyboard = [
+            [
+                InlineKeyboardButton("ایرانی 🍚", callback_data="cuisine_iranian"),
+                InlineKeyboardButton("مدیترانه‌ای 🥗", callback_data="cuisine_mediterranean"),
+            ],
+            [
+                InlineKeyboardButton("فست‌فود سالم 🍔", callback_data="cuisine_fastfood"),
+                InlineKeyboardButton("فرقی نمی‌کنه 🤷", callback_data="cuisine_any"),
+            ],
+        ]
+        await _edit_message(
+            query,
+            "عالیه! یه سوال کوچیک —\n\nبیشتر دوست داری چه سبک غذایی پیشنهاد بدم؟",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
 
     elif query.data == "start_profile":
         # کاربر قبول کرد پروفایل بسازه — شروع فلوی پروفایل
@@ -386,15 +441,39 @@ async def handle_recipe_detail(update: Update, context: ContextTypes.DEFAULT_TYP
                 InlineKeyboardButton("فقط غذا بپزم 🍳", callback_data="goal_none"),
             ],
         ]
-        await query.edit_message_text(
+        await _edit_message(
+            query,
             "عالیه! یه سوال سریع —\n\nهدف اصلیت چیه؟",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
     elif query.data == "skip_profile":
-        await query.edit_message_text(
+        await _edit_message(
+            query,
             "باشه! هر وقت خواستی /start رو بزن تا پروفایلت رو بسازیم. 📸\n\nتا اون موقع هر وقت عکس فرستادی کمکت می‌کنم."
         )
+
+
+# ---------- شخصی‌سازی عمیق‌تر (مسیر فلو بعد از تجربه اول) ----------
+
+async def handle_cuisine_preference(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    cuisine_map = {
+        "cuisine_iranian": "ایرانی",
+        "cuisine_mediterranean": "مدیترانه‌ای",
+        "cuisine_fastfood": "فست‌فود سالم",
+        "cuisine_any": None,
+    }
+    cuisine = cuisine_map.get(query.data)
+    db.update_user(user_id, cuisine=cuisine)
+
+    await _edit_message(
+        query,
+        "ثبت شد! ✅\n\nاز این به بعد پیشنهادهام رو با این سبک هم تنظیم می‌کنم.\n\nهر وقت خواستی دوباره عکس بفرست. 📸"
+    )
 
 
 # ---------- دستور پیشرفت ----------
@@ -428,6 +507,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📸 عکس از مواد غذایی‌ات بفرست تا بهت بگم چی بپزی!")
 
 
+# ---------- لنگر روزانه ----------
+
+async def send_daily_anchor(context: ContextTypes.DEFAULT_TYPE):
+    """پله ۶ از فلو - یادآوری ملایم روزانه، فقط برای کسایی که اجازه‌ی صریح دادن."""
+    user_ids = db.get_all_active_users_for_reminder()
+    for user_id in user_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="سلام! 👋\n\nامروز چی خونه داری؟ یه عکس بفرست تا بهت بگم چی بپزی 🍽️",
+            )
+        except Exception as e:
+            logger.warning(f"ارسال لنگر روزانه به {user_id} ناموفق بود: {e}")
+
+
 def main():
     db.init_db()
 
@@ -440,7 +534,18 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_goal, pattern="^goal_"))
     app.add_handler(CallbackQueryHandler(handle_restriction, pattern="^rest_"))
     app.add_handler(CallbackQueryHandler(handle_anchor_permission, pattern="^anchor_"))
+    app.add_handler(CallbackQueryHandler(handle_cuisine_preference, pattern="^cuisine_"))
     app.add_handler(CallbackQueryHandler(handle_recipe_detail))
+
+    if app.job_queue is not None:
+        anchor_hour, anchor_minute = map(int, ANCHOR_TIME_UTC.split(":"))
+        app.job_queue.run_daily(send_daily_anchor, time=dt_time(hour=anchor_hour, minute=anchor_minute))
+        logger.info(f"زمان‌بند لنگر روزانه فعال شد - هر روز ساعت {ANCHOR_TIME_UTC} UTC")
+    else:
+        logger.warning(
+            "JobQueue در دسترس نیست - لنگر روزانه غیرفعاله. "
+            "برای فعال‌سازی، در requirements.txt باید python-telegram-bot[job-queue] نصب شده باشه."
+        )
 
     logger.info("Bot started...")
     app.run_polling(drop_pending_updates=True)
