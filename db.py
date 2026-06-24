@@ -21,7 +21,8 @@ def init_db():
                 last_active TEXT,
                 created_at TEXT,
                 allow_daily_anchor INTEGER DEFAULT 0,
-                is_subscribed INTEGER DEFAULT 0
+                is_subscribed INTEGER DEFAULT 0,
+                share_variant TEXT
             )
         """)
         conn.execute("""
@@ -55,15 +56,32 @@ def init_db():
                 created_at TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS share_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                variant TEXT,
+                invited_at TEXT,
+                responded INTEGER DEFAULT 0,
+                responded_at TEXT,
+                photo_file_id TEXT
+            )
+        """)
         conn.commit()
 
-        # migration امن برای دیتابیس‌هایی که قبلاً بدون ستون provider ساخته شدن
+        # migration امن برای دیتابیس‌هایی که قبلاً بدون این ستون‌ها ساخته شدن
         for table in ("feedback", "recipe_log"):
             try:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN provider TEXT")
                 conn.commit()
             except sqlite3.OperationalError:
                 pass  # ستون از قبل وجود داره، مشکلی نیست
+
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN share_variant TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
 
 @contextmanager
@@ -194,4 +212,54 @@ def get_feedback_stats_by_provider() -> dict:
         stats.setdefault(provider, {"good": 0, "bad": 0})
         if r["rating"] in ("good", "bad"):
             stats[provider][r["rating"]] = r["cnt"]
+    return stats
+
+
+def log_share_invite(user_id: int, variant: str) -> int:
+    """ثبت یه دعوت اشتراک‌گذاری جدید (لحظه‌ای که دعوت نشون داده/فرستاده می‌شه)."""
+    now = datetime.utcnow().isoformat()
+    with get_conn() as conn:
+        cursor = conn.execute(
+            "INSERT INTO share_log (user_id, variant, invited_at, responded) VALUES (?, ?, ?, 0)",
+            (user_id, variant, now),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_pending_share_invite(user_id: int):
+    """آخرین دعوت بی‌پاسخ این کاربر رو برمی‌گردونه (یا None اگه نباشه)."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM share_log WHERE user_id = ? AND responded = 0 ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def mark_share_responded(invite_id: int, photo_file_id: str = None):
+    """ثبت اینکه کاربر به دعوت پاسخ داد (عکس غذای پخته‌شده رو فرستاد)."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE share_log SET responded = 1, responded_at = ?, photo_file_id = ? WHERE id = ?",
+            (datetime.utcnow().isoformat(), photo_file_id, invite_id),
+        )
+        conn.commit()
+
+
+def get_share_stats_by_variant() -> dict:
+    """نرخ پاسخ هر واریانت - همون چیزی که برای تصمیم نهایی تست A/B لازمه.
+    خروجی نمونه: {"immediate": {"total": 20, "responded": 9, "rate_percent": 45.0}, ...}"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT variant, COUNT(*) as total, SUM(responded) as responded FROM share_log GROUP BY variant"
+        ).fetchall()
+
+    stats = {}
+    for r in rows:
+        variant = r["variant"] or "unknown"
+        total = r["total"] or 0
+        responded = r["responded"] or 0
+        rate = round((responded / total) * 100, 1) if total else 0.0
+        stats[variant] = {"total": total, "responded": responded, "rate_percent": rate}
     return stats

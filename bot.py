@@ -1,7 +1,8 @@
 import os
 import base64
 import logging
-from datetime import time as dt_time
+import random
+from datetime import time as dt_time, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -19,6 +20,17 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANCHOR_TIME_UTC = os.environ.get("ANCHOR_TIME_UTC", "14:30")  # پیش‌فرض ~۱۸:۰۰ به وقت ایران
+SHARE_DELAY_HOURS = float(os.environ.get("SHARE_DELAY_HOURS", "2"))
+
+
+def _get_or_assign_share_variant(user_id: int, user: dict) -> str:
+    """تست A/B زمان‌بندی دعوت اشتراک‌گذاری - هر کاربر یه بار تصادفی انتخاب می‌شه
+    و از اون به بعد همیشه همون واریانت رو می‌بینه."""
+    variant = user.get("share_variant")
+    if not variant:
+        variant = random.choice(["immediate", "delayed"])
+        db.update_user(user_id, share_variant=variant)
+    return variant
 
 
 async def _edit_message(query, text, reply_markup=None, parse_mode="Markdown"):
@@ -183,6 +195,18 @@ async def handle_anchor_permission(update: Update, context: ContextTypes.DEFAULT
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = db.get_user(user_id)
+
+    # اگه منتظر عکس غذای پخته‌شده (پاسخ به دعوت اشتراک‌گذاری) بودیم، این عکس رو جدا پردازش کن
+    pending_invite = db.get_pending_share_invite(user_id)
+    if pending_invite:
+        photo_file_id = update.message.photo[-1].file_id
+        db.mark_share_responded(pending_invite["id"], photo_file_id=photo_file_id)
+        await update.message.reply_text(
+            "چه عکس قشنگی! 😍\n\n"
+            "به‌زودی همینجا یه کارت باحال هم برات می‌سازیم که بتونی به اشتراک بگذاری. "
+            "فعلاً همین لذت بردن از غذات کافیه 🍽️"
+        )
+        return
 
     wait_msg = await update.message.reply_text("داریم مواد رو بررسی می‌کنیم... 🔍")
 
@@ -380,6 +404,23 @@ async def handle_recipe_detail(update: Update, context: ContextTypes.DEFAULT_TYP
         previous_text = context.user_data.get("last_recipe_detail_text", "")
         combined_text = f"{previous_text}\n\n———\n\n{base_text}"
 
+        # تست A/B دعوت به اشتراک‌گذاری - فقط برای فیدبک مثبت (لحظه‌ی "وای")
+        if fb_type == "good":
+            variant = _get_or_assign_share_variant(user_id, user)
+            if variant == "immediate":
+                db.log_share_invite(user_id, "immediate")
+                combined_text += (
+                    "\n\n🎉 وقتی پختیش، عکس غذای واقعی‌ای که درست کردی رو برام بفرست، "
+                    "می‌خوام ببینم چی شد!"
+                )
+            elif variant == "delayed" and context.job_queue is not None:
+                context.job_queue.run_once(
+                    send_delayed_share_prompt,
+                    when=timedelta(hours=SHARE_DELAY_HOURS),
+                    data={"user_id": user_id},
+                    name=f"share_delay_{user_id}_{index}",
+                )
+
         if not has_profile:
             # قلاب به پروفایل - برای کسی که هنوز پروفایل نساخته
             keyboard = [[
@@ -520,6 +561,21 @@ async def send_daily_anchor(context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logger.warning(f"ارسال لنگر روزانه به {user_id} ناموفق بود: {e}")
+
+
+# ---------- تست A/B دعوت اشتراک‌گذاری (کارت ویروسی) ----------
+
+async def send_delayed_share_prompt(context: ContextTypes.DEFAULT_TYPE):
+    """واریانت تأخیری تست A/B - چند ساعت بعد از فیدبک مثبت پیگیری می‌کنه."""
+    user_id = context.job.data["user_id"]
+    db.log_share_invite(user_id, "delayed")
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="چطور شد؟ 😋\n\nعکس غذای پخته‌شده رو نشونم بده، می‌خوام ببینم چی از آب دراومده!",
+        )
+    except Exception as e:
+        logger.warning(f"ارسال پیام تأخیری اشتراک‌گذاری به {user_id} ناموفق بود: {e}")
 
 
 def main():
