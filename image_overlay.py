@@ -157,7 +157,6 @@ def _draw_pill_tag(draw: ImageDraw.ImageDraw, xy, text: str, font, sizes: dict):
 
 def _draw_hero_bar(img: Image.Image, totals: dict):
     width, height = img.size
-    sizes = _scale_sizes(width)
     hero_h = max(int(height * 0.26), int(width * 0.22))
     hero_h = min(hero_h, int(height * 0.36))
 
@@ -173,27 +172,35 @@ def _draw_hero_bar(img: Image.Image, totals: dict):
     base.paste(overlay, (0, height - hero_h), overlay)
     draw = ImageDraw.Draw(base)
 
-    font_hero = _load_font(FONT_BOLD_CANDIDATES, sizes["hero"])
-    font_macro = _load_font(FONT_REGULAR_CANDIDATES, sizes["macro"])
-    font_brand = _load_font(FONT_BOLD_CANDIDATES, sizes["brand"])
+    # اندازه‌ی فونت‌ها بر اساس ارتفاع خود نوار (hero_h) محاسبه می‌شه، نه عرض کل عکس،
+    # تا تضمین بشه همه چیز داخل نوار جا می‌شه و روی هم نمی‌افته
+    pad = max(20, int(hero_h * 0.08))
+    hero_font_size = max(36, int(hero_h * 0.34))
+    macro_font_size = max(20, int(hero_h * 0.16))
+    brand_font_size = max(18, int(min(width, height) * 0.025))
+
+    font_hero = _load_font(FONT_BOLD_CANDIDATES, hero_font_size)
+    font_macro = _load_font(FONT_REGULAR_CANDIDATES, macro_font_size)
+    font_brand = _load_font(FONT_BOLD_CANDIDATES, brand_font_size)
 
     cal = _to_fa_digits(totals.get("calories", 0))
     protein = _to_fa_digits(totals.get("protein_g", 0))
     carbs = _to_fa_digits(totals.get("carbs_g", 0))
     fat = _to_fa_digits(totals.get("fat_g", 0))
 
-    hero_text = f"{cal}"
+    hero_text = cal
     cal_label = "کالری"
-    macro_text = f"💪 {protein}گ   🍞 {carbs}گ   🥑 {fat}گ"
+    macro_text = f"پروتئین {protein}گ   کربو {carbs}گ   چربی {fat}گ"
 
-    y_base = height - hero_h + max(16, hero_h // 10)
-    fire_font = _load_font(FONT_REGULAR_CANDIDATES, sizes["macro"] + 4)
-    draw.text((28, y_base), "🔥", font=fire_font, fill=(255, 200, 80, 255))
-    draw.text((72, y_base - 8), hero_text, font=font_hero, fill=(255, 255, 255, 255))
-    hw, _ = _text_size(draw, hero_text, font_hero)
-    draw.text((82 + hw, y_base + 12), cal_label, font=font_macro, fill=(230, 230, 230, 255))
+    # ردیف اول: عدد بزرگ کالری + لیبل کنارش
+    row1_y = height - hero_h + pad
+    draw.text((pad, row1_y), hero_text, font=font_hero, fill=(255, 255, 255, 255))
+    hw, hh = _text_size(draw, hero_text, font_hero)
+    draw.text((pad + hw + 16, row1_y + max(0, hh - macro_font_size)), cal_label, font=font_macro, fill=(230, 230, 230, 255))
 
-    draw.text((28, y_base + max(48, hero_h // 2.8)), macro_text, font=font_macro, fill=(240, 240, 240, 255))
+    # ردیف دوم: همیشه واقعاً زیر ردیف اول قرار می‌گیره (بر اساس ارتفاع واقعی‌ش، نه عدد ثابت فرضی)
+    row2_y = row1_y + hh + max(10, pad // 2)
+    draw.text((pad, row2_y), macro_text, font=font_macro, fill=(240, 240, 240, 255))
 
     bw, bh = _text_size(draw, BRAND_TEXT, font_brand)
     brand_pad = 12

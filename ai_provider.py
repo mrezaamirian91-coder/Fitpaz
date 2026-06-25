@@ -200,12 +200,25 @@ def _call_gemini_text(prompt: str, retries: int = 3) -> dict:
 
 
 def analyze_photo_with_positions(photo_b64: str) -> tuple[dict, str]:
-    """تشخیص غذا/مواد با موقعیت روی عکس و ماکرو — فقط Gemini (برای واو مومنت بصری)."""
-    if not _gemini_client:
-        raise RuntimeError("GEMINI_API_KEY برای تشخیص موقعیت روی عکس لازم است")
+    """تشخیص غذا/مواد با موقعیت روی عکس و ماکرو.
+    اولویت با Gemini (فقط همین مدل موقعیت دقیق روی عکس می‌ده). اگه Gemini کامل در دسترس نبود،
+    با OpenAI بدون موقعیت دقیق ادامه می‌دیم - یعنی واو مومنت بدون تگ روی خود عکس، ولی همچنان
+    با کالری/ماکرو در کپشن. بهتر از خاموش شدن کامل قلب محصول."""
+    if _gemini_client:
+        try:
+            data = _call_gemini_vision(photo_b64, WOW_VISION_PROMPT)
+            return _normalize_vision_data(data), "gemini"
+        except Exception as e:
+            logger.warning(f"Gemini vision-with-positions failed, degrading to OpenAI without positions: {e}")
 
-    data = _call_gemini_vision(photo_b64, WOW_VISION_PROMPT)
-    return _normalize_vision_data(data), "gemini"
+    if _openai_client:
+        try:
+            data = _call_openai_vision(photo_b64, WOW_VISION_PROMPT)
+            return _normalize_vision_data(data), "openai"
+        except Exception as e:
+            logger.warning(f"OpenAI vision fallback also failed: {e}")
+
+    raise RuntimeError("هیچ سرویس هوش مصنوعی‌ای پیکربندی نشده (نه OpenAI نه Gemini)")
 
 
 def analyze_photo(photo_b64: str) -> tuple[dict, str]:
