@@ -56,13 +56,69 @@ def _normalize_vision_data(data: dict) -> dict:
     items = data.get("items", [])
     normalized = []
     for item in items:
-        normalized.append({
+        entry = {
             "name": str(item.get("name", "")).strip(),
             "quantity": str(item.get("quantity", "")).strip(),
             "calories": _safe_int(item.get("calories", 0)),
-        })
+            "protein_g": _safe_int(item.get("protein_g", 0)),
+            "carbs_g": _safe_int(item.get("carbs_g", 0)),
+            "fat_g": _safe_int(item.get("fat_g", 0)),
+        }
+        box = item.get("box_2d")
+        if isinstance(box, list) and len(box) == 4:
+            entry["box_2d"] = box
+        normalized.append(entry)
     data["items"] = normalized
+
+    totals = data.get("totals") or {}
+    if totals:
+        data["totals"] = {
+            "calories": _safe_int(totals.get("calories", 0)),
+            "protein_g": _safe_int(totals.get("protein_g", 0)),
+            "carbs_g": _safe_int(totals.get("carbs_g", 0)),
+            "fat_g": _safe_int(totals.get("fat_g", 0)),
+        }
+    elif normalized:
+        data["totals"] = {
+            "calories": sum(i["calories"] for i in normalized),
+            "protein_g": sum(i["protein_g"] for i in normalized),
+            "carbs_g": sum(i["carbs_g"] for i in normalized),
+            "fat_g": sum(i["fat_g"] for i in normalized),
+        }
     return data
+
+
+WOW_VISION_PROMPT = """این عکس غذا یا مواد غذایی است — ممکن است مواد خام باشد یا یک وعده/بشقاب آماده.
+هر ماده یا بخش قابل‌شناسایی را با مقدار تخمینی، کالری و ماکرو (گرم) برگردان.
+برای غذاهای ترکیبی ایرانی (مثل قورمه‌سبزی با برنج)، بخش‌های منطقی جدا کن (خورش، برنج، سالاد و...).
+
+موقعیت هر آیتم روی عکس را با box_2d بده: [ymin, xmin, ymax, xmax] نرمال‌شده ۰ تا ۱۰۰۰.
+اگر موقعیت دقیق ممکن نیست، box_2d را حذف کن (فقط همان آیتم).
+
+فقط JSON بدون متن اضافه:
+{
+  "photo_type": "raw_ingredients یا prepared_meal",
+  "items": [
+    {
+      "name": "نام فارسی",
+      "quantity": "مقدار تخمینی",
+      "calories": عدد_صحیح,
+      "protein_g": عدد_صحیح,
+      "carbs_g": عدد_صحیح,
+      "fat_g": عدد_صحیح,
+      "box_2d": [ymin, xmin, ymax, xmax]
+    }
+  ],
+  "totals": {
+    "calories": عدد_صحیح,
+    "protein_g": عدد_صحیح,
+    "carbs_g": عدد_صحیح,
+    "fat_g": عدد_صحیح
+  },
+  "confidence": "high یا medium یا low"
+}
+
+مقادیر باید واقع‌بینانه و متناسب با اندازه‌ی دیده‌شده در عکس باشند."""
 
 
 def _call_openai_vision(photo_b64: str, prompt: str) -> dict:
@@ -111,6 +167,15 @@ def _call_gemini_text(prompt: str) -> dict:
         config=genai_types.GenerateContentConfig(response_mime_type="application/json"),
     )
     return json.loads(_clean_json(response.text))
+
+
+def analyze_photo_with_positions(photo_b64: str) -> tuple[dict, str]:
+    """تشخیص غذا/مواد با موقعیت روی عکس و ماکرو — فقط Gemini (برای واو مومنت بصری)."""
+    if not _gemini_client:
+        raise RuntimeError("GEMINI_API_KEY برای تشخیص موقعیت روی عکس لازم است")
+
+    data = _call_gemini_vision(photo_b64, WOW_VISION_PROMPT)
+    return _normalize_vision_data(data), "gemini"
 
 
 def analyze_photo(photo_b64: str) -> tuple[dict, str]:

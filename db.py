@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 
 DB_PATH = os.environ.get("DB_PATH", "fitpaz.db")
+RATE_LIMIT_PHOTOS_PER_HOUR = int(os.environ.get("RATE_LIMIT_PHOTOS_PER_HOUR", "10"))
+RATE_LIMIT_MIN_SECONDS = int(os.environ.get("RATE_LIMIT_MIN_SECONDS", "15"))
 
 
 def init_db():
@@ -67,6 +69,19 @@ def init_db():
                 photo_file_id TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meal_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                calories INTEGER,
+                protein_g INTEGER DEFAULT 0,
+                carbs_g INTEGER DEFAULT 0,
+                fat_g INTEGER DEFAULT 0,
+                photo_type TEXT,
+                provider TEXT,
+                created_at TEXT
+            )
+        """)
         conn.commit()
 
         # migration امن برای دیتابیس‌هایی که قبلاً بدون این ستون‌ها ساخته شدن
@@ -77,11 +92,19 @@ def init_db():
             except sqlite3.OperationalError:
                 pass  # ستون از قبل وجود داره، مشکلی نیست
 
-        try:
-            conn.execute("ALTER TABLE users ADD COLUMN share_variant TEXT")
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        user_migrations = [
+            "ALTER TABLE users ADD COLUMN share_variant TEXT",
+            "ALTER TABLE users ADD COLUMN entry_source TEXT",
+            "ALTER TABLE users ADD COLUMN age_confirmed INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN why_goal TEXT",
+            "ALTER TABLE users ADD COLUMN has_wow INTEGER DEFAULT 0",
+        ]
+        for sql in user_migrations:
+            try:
+                conn.execute(sql)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
 
 
 @contextmanager
@@ -113,6 +136,10 @@ def get_user(user_id: int) -> dict:
 
         user = dict(row)
         user["restrictions"] = json.loads(user["restrictions"] or "[]")
+        user.setdefault("entry_source", None)
+        user.setdefault("age_confirmed", 0)
+        user.setdefault("why_goal", None)
+        user.setdefault("has_wow", 0)
         return user
 
 
@@ -173,11 +200,69 @@ def log_ingredients(user_id: int, items: list, provider: str = None):
         conn.commit()
 
 
+def log_meal(
+    user_id: int,
+    calories: int,
+    protein_g: int = 0,
+    carbs_g: int = 0,
+    fat_g: int = 0,
+    photo_type: str = None,
+    provider: str = None,
+):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO meal_log (user_id, calories, protein_g, carbs_g, fat_g, photo_type, provider, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                calories,
+                protein_g,
+                carbs_g,
+                fat_g,
+                photo_type,
+                provider,
+                datetime.utcnow().isoformat(),
+            ),
+        )
+        conn.commit()
+
+
+def check_photo_rate_limit(user_id: int) -> tuple[bool, str | None]:
+    """بررسی محدودیت نرخ ارسال عکس. خروجی: (مجاز؟, پیام خطا)"""
+    now = datetime.utcnow()
+    hour_ago = (now - timedelta(hours=1)).isoformat()
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT created_at FROM meal_log WHERE user_id = ? AND created_at >= ? ORDER BY created_at DESC",
+            (user_id, hour_ago),
+        ).fetchall()
+
+    if len(rows) >= RATE_LIMIT_PHOTOS_PER_HOUR:
+        return False, (
+            f"برای محافظت از سیستم، حداکثر {RATE_LIMIT_PHOTOS_PER_HOUR} عکس در ساعت می‌تونی بفرستی. "
+            "چند دقیقه دیگه دوباره امتحان کن 🙏"
+        )
+
+    if rows:
+        last = datetime.fromisoformat(rows[0]["created_at"])
+        elapsed = (now - last).total_seconds()
+        if elapsed < RATE_LIMIT_MIN_SECONDS:
+            wait = int(RATE_LIMIT_MIN_SECONDS - elapsed) + 1
+            return False, f"یه کم صبر کن — {wait} ثانیه دیگه دوباره عکس بفرست 🙏"
+
+    return True, None
+
+
+def is_profile_complete(user: dict) -> bool:
+    return bool(user.get("age_confirmed")) and user.get("step") == "ready" and user.get("goal")
+
+
 def get_weekly_stats(user_id: int) -> dict:
     week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT calories FROM recipe_log WHERE user_id = ? AND created_at >= ?",
+            "SELECT calories FROM meal_log WHERE user_id = ? AND created_at >= ?",
             (user_id, week_ago),
         ).fetchall()
 
