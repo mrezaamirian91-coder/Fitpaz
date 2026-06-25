@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 MAX_ON_IMAGE_TAGS = 5
 BRAND_TEXT = "فیت پز"
+MIN_IMAGE_WIDTH = 1200
 
 FONT_BOLD_CANDIDATES = [
     Path(__file__).parent / "fonts" / "Vazirmatn-Bold.ttf",
@@ -34,6 +35,30 @@ def _load_font(candidates: list, size: int) -> ImageFont.FreeTypeFont | ImageFon
         except OSError:
             continue
     return ImageFont.load_default()
+
+
+def _prepare_image(image_bytes: bytes) -> Image.Image:
+    """عکس‌های کوچک تلگرام را بزرگ می‌کند تا تگ‌ها خوانا بمانند."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    width, height = img.size
+    if width < MIN_IMAGE_WIDTH:
+        scale = MIN_IMAGE_WIDTH / width
+        img = img.resize((MIN_IMAGE_WIDTH, int(height * scale)), Image.Resampling.LANCZOS)
+    return img
+
+
+def _scale_sizes(width: int) -> dict:
+    return {
+        "tag": max(56, width // 9),
+        "hero": max(80, width // 4),
+        "macro": max(26, width // 16),
+        "brand": max(22, width // 18),
+        "pad_x": max(20, width // 20),
+        "pad_y": max(14, width // 28),
+        "radius": max(16, width // 30),
+        "leader": max(4, width // 180),
+        "dot_r": max(8, width // 70),
+    }
 
 
 def _to_fa_digits(value) -> str:
@@ -87,7 +112,7 @@ def _place_tag(
         (1, -1), (-1, -1), (1, 1), (-1, 1),
         (1, 0), (-1, 0), (0, -1), (0, 1),
     ]
-    offset = max(36, width // 14) + (index % 3) * 12
+    offset = max(52, width // 10) + (index % 3) * 16
 
     for dx, dy in directions:
         tx = cx + dx * offset
@@ -100,46 +125,47 @@ def _place_tag(
     return None
 
 
-def _draw_leader(draw: ImageDraw.ImageDraw, start: tuple[int, int], end: tuple[int, int], width: int):
-    line_w = max(2, width // 220)
-    outline_w = line_w + 2
+def _draw_leader(draw: ImageDraw.ImageDraw, start: tuple[int, int], end: tuple[int, int], sizes: dict):
+    line_w = sizes["leader"]
+    outline_w = line_w + 3
     draw.line([start, end], fill=(0, 0, 0), width=outline_w)
     draw.line([start, end], fill=(255, 255, 255), width=line_w)
 
-    r = max(4, width // 120)
+    r = sizes["dot_r"]
     draw.ellipse(
         [start[0] - r, start[1] - r, start[0] + r, start[1] + r],
         fill=(255, 255, 255),
         outline=(0, 0, 0),
-        width=max(1, width // 400),
+        width=max(2, line_w),
     )
 
 
-def _draw_pill_tag(draw: ImageDraw.ImageDraw, xy, text: str, font, width: int):
+def _draw_pill_tag(draw: ImageDraw.ImageDraw, xy, text: str, font, sizes: dict):
     x, y = xy
     tw, th = _text_size(draw, text, font)
-    pad_x = max(12, width // 38)
-    pad_y = max(8, width // 55)
+    pad_x = sizes["pad_x"]
+    pad_y = sizes["pad_y"]
     rect = (x, y, x + tw + pad_x * 2, y + th + pad_y * 2)
-    radius = max(10, width // 45)
+    radius = sizes["radius"]
 
-    shadow = (rect[0] + 3, rect[1] + 4, rect[2] + 3, rect[3] + 4)
-    _rounded_rect(draw, shadow, radius, fill=(50, 50, 50))
-    _rounded_rect(draw, rect, radius, fill=(255, 255, 255), outline=(220, 220, 220), width=1)
-    draw.text((x + pad_x, y + pad_y), text, fill=(20, 20, 20), font=font)
+    shadow = (rect[0] + 4, rect[1] + 5, rect[2] + 4, rect[3] + 5)
+    _rounded_rect(draw, shadow, radius, fill=(40, 40, 40))
+    _rounded_rect(draw, rect, radius, fill=(255, 255, 255), outline=(200, 200, 200), width=2)
+    draw.text((x + pad_x, y + pad_y), text, fill=(15, 15, 15), font=font)
     return rect
 
 
 def _draw_hero_bar(img: Image.Image, totals: dict):
     width, height = img.size
-    hero_h = max(int(height * 0.22), int(width * 0.18))
-    hero_h = min(hero_h, int(height * 0.32))
+    sizes = _scale_sizes(width)
+    hero_h = max(int(height * 0.26), int(width * 0.22))
+    hero_h = min(hero_h, int(height * 0.36))
 
     overlay = Image.new("RGBA", (width, hero_h), (0, 0, 0, 0))
     pixels = overlay.load()
     for row in range(hero_h):
         t = row / max(hero_h - 1, 1)
-        alpha = int(40 + 175 * t)
+        alpha = int(50 + 190 * t)
         for col in range(width):
             pixels[col, row] = (0, 0, 0, alpha)
 
@@ -147,9 +173,9 @@ def _draw_hero_bar(img: Image.Image, totals: dict):
     base.paste(overlay, (0, height - hero_h), overlay)
     draw = ImageDraw.Draw(base)
 
-    font_hero = _load_font(FONT_BOLD_CANDIDATES, max(28, width // 9))
-    font_macro = _load_font(FONT_REGULAR_CANDIDATES, max(13, width // 28))
-    font_brand = _load_font(FONT_BOLD_CANDIDATES, max(14, width // 24))
+    font_hero = _load_font(FONT_BOLD_CANDIDATES, sizes["hero"])
+    font_macro = _load_font(FONT_REGULAR_CANDIDATES, sizes["macro"])
+    font_brand = _load_font(FONT_BOLD_CANDIDATES, sizes["brand"])
 
     cal = _to_fa_digits(totals.get("calories", 0))
     protein = _to_fa_digits(totals.get("protein_g", 0))
@@ -158,24 +184,25 @@ def _draw_hero_bar(img: Image.Image, totals: dict):
 
     hero_text = f"{cal}"
     cal_label = "کالری"
-    macro_text = f"پروتئین {protein}گ   کربو {carbs}گ   چربی {fat}گ"
+    macro_text = f"💪 {protein}گ   🍞 {carbs}گ   🥑 {fat}گ"
 
-    y_base = height - hero_h + max(12, hero_h // 8)
-    draw.text((24, y_base), "🔥", font=font_macro, fill=(255, 200, 80, 255))
-    draw.text((56, y_base - 4), hero_text, font=font_hero, fill=(255, 255, 255, 255))
+    y_base = height - hero_h + max(16, hero_h // 10)
+    fire_font = _load_font(FONT_REGULAR_CANDIDATES, sizes["macro"] + 4)
+    draw.text((28, y_base), "🔥", font=fire_font, fill=(255, 200, 80, 255))
+    draw.text((72, y_base - 8), hero_text, font=font_hero, fill=(255, 255, 255, 255))
     hw, _ = _text_size(draw, hero_text, font_hero)
-    draw.text((62 + hw, y_base + 8), cal_label, font=font_macro, fill=(220, 220, 220, 255))
+    draw.text((82 + hw, y_base + 12), cal_label, font=font_macro, fill=(230, 230, 230, 255))
 
-    draw.text((24, y_base + max(34, hero_h // 3)), macro_text, font=font_macro, fill=(235, 235, 235, 255))
+    draw.text((28, y_base + max(48, hero_h // 2.8)), macro_text, font=font_macro, fill=(240, 240, 240, 255))
 
     bw, bh = _text_size(draw, BRAND_TEXT, font_brand)
-    brand_pad = 10
-    bx1 = width - bw - brand_pad * 2 - 16
-    by1 = 16
-    bx2 = width - 16
+    brand_pad = 12
+    bx1 = width - bw - brand_pad * 2 - 20
+    by1 = 20
+    bx2 = width - 20
     by2 = by1 + bh + brand_pad * 2
-    _rounded_rect(draw, (bx1, by1, bx2, by2), 12, fill=(0, 0, 0, 110))
-    draw.text((bx1 + brand_pad, by1 + brand_pad), BRAND_TEXT, font=font_brand, fill=(255, 255, 255, 230))
+    _rounded_rect(draw, (bx1, by1, bx2, by2), 14, fill=(0, 0, 0, 130))
+    draw.text((bx1 + brand_pad, by1 + brand_pad), BRAND_TEXT, font=font_brand, fill=(255, 255, 255, 240))
 
     return base.convert("RGB")
 
@@ -186,13 +213,14 @@ def create_tagged_image(
     totals: dict | None = None,
 ) -> tuple[bytes, list]:
     """استایل A: تگ عدد کالری + hero پایین. خروجی: (JPEG bytes, آیتم‌های بدون تگ)."""
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = _prepare_image(image_bytes)
     width, height = img.size
+    sizes = _scale_sizes(width)
     draw = ImageDraw.Draw(img)
 
-    font_tag = _load_font(FONT_BOLD_CANDIDATES, max(18, width // 16))
-    hero_h = max(int(height * 0.22), int(width * 0.18))
-    hero_h = min(hero_h, int(height * 0.32))
+    font_tag = _load_font(FONT_BOLD_CANDIDATES, sizes["tag"])
+    hero_h = max(int(height * 0.26), int(width * 0.22))
+    hero_h = min(hero_h, int(height * 0.36))
 
     tagged_items = []
     untagged = []
@@ -211,8 +239,8 @@ def create_tagged_image(
     for item, center in sortable[:MAX_ON_IMAGE_TAGS]:
         cal_text = _to_fa_digits(item.get("calories", 0))
         tw, th = _text_size(draw, cal_text, font_tag)
-        pad_x = max(12, width // 38)
-        pad_y = max(8, width // 55)
+        pad_x = sizes["pad_x"]
+        pad_y = sizes["pad_y"]
         tag_w = tw + pad_x * 2
         tag_h = th + pad_y * 2
 
@@ -225,8 +253,8 @@ def create_tagged_image(
         tag_rect = (tx, ty, tx + tag_w, ty + tag_h)
         tag_cx = (tag_rect[0] + tag_rect[2]) // 2
         tag_cy = (tag_rect[1] + tag_rect[3]) // 2
-        _draw_leader(draw, center, (tag_cx, tag_cy), width)
-        placed_rects.append(_draw_pill_tag(draw, (tx, ty), cal_text, font_tag, width))
+        _draw_leader(draw, center, (tag_cx, tag_cy), sizes)
+        placed_rects.append(_draw_pill_tag(draw, (tx, ty), cal_text, font_tag, sizes))
         tagged_items.append(item)
 
     for item, _ in sortable[MAX_ON_IMAGE_TAGS:]:

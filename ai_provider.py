@@ -11,6 +11,7 @@ import os
 import json
 import base64
 import logging
+import time
 
 from openai import OpenAI
 from google import genai
@@ -138,17 +139,29 @@ def _call_openai_vision(photo_b64: str, prompt: str) -> dict:
     return json.loads(_clean_json(response.choices[0].message.content))
 
 
-def _call_gemini_vision(photo_b64: str, prompt: str) -> dict:
+def _call_gemini_vision(photo_b64: str, prompt: str, retries: int = 3) -> dict:
     image_bytes = base64.b64decode(photo_b64)
-    response = _gemini_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=[
-            genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-            prompt,
-        ],
-        config=genai_types.GenerateContentConfig(response_mime_type="application/json"),
-    )
-    return json.loads(_clean_json(response.text))
+    last_err = None
+    for attempt in range(retries):
+        try:
+            response = _gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[
+                    genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                    prompt,
+                ],
+                config=genai_types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            return json.loads(_clean_json(response.text))
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1 and _is_retryable_gemini_error(e):
+                wait = 1.5 * (attempt + 1)
+                logger.warning(f"Gemini vision retry {attempt + 1}/{retries} after {wait}s: {e}")
+                time.sleep(wait)
+                continue
+            raise
+    raise last_err
 
 
 def _call_openai_text(prompt: str, max_tokens: int = 1500) -> dict:
@@ -160,13 +173,30 @@ def _call_openai_text(prompt: str, max_tokens: int = 1500) -> dict:
     return json.loads(_clean_json(response.choices[0].message.content))
 
 
-def _call_gemini_text(prompt: str) -> dict:
-    response = _gemini_client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=prompt,
-        config=genai_types.GenerateContentConfig(response_mime_type="application/json"),
-    )
-    return json.loads(_clean_json(response.text))
+def _is_retryable_gemini_error(exc: Exception) -> bool:
+    msg = str(exc).upper()
+    return "503" in msg or "UNAVAILABLE" in msg or "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
+
+def _call_gemini_text(prompt: str, retries: int = 3) -> dict:
+    last_err = None
+    for attempt in range(retries):
+        try:
+            response = _gemini_client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            return json.loads(_clean_json(response.text))
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1 and _is_retryable_gemini_error(e):
+                wait = 1.5 * (attempt + 1)
+                logger.warning(f"Gemini text retry {attempt + 1}/{retries} after {wait}s: {e}")
+                time.sleep(wait)
+                continue
+            raise
+    raise last_err
 
 
 def analyze_photo_with_positions(photo_b64: str) -> tuple[dict, str]:
@@ -213,17 +243,20 @@ def analyze_photo(photo_b64: str) -> tuple[dict, str]:
 
 
 def generate_recipes(prompt: str) -> tuple[dict, str]:
-    """تولید پیشنهاد غذا. خروجی: (داده‌ی JSON, نام مدلی که جواب داد)"""
+    """تولید پیشنهاد غذا — اول Gemini (رایگان)، بعد OpenAI."""
+    if _gemini_client:
+        try:
+            return _call_gemini_text(prompt), "gemini"
+        except Exception as e:
+            logger.warning(f"Gemini recipe generation failed, falling back to OpenAI: {e}")
+
     if _openai_client:
         try:
             return _call_openai_text(prompt), "openai"
         except Exception as e:
-            logger.warning(f"OpenAI recipe generation failed, falling back to Gemini: {e}")
+            logger.warning(f"OpenAI recipe generation failed: {e}")
 
-    if _gemini_client:
-        return _call_gemini_text(prompt), "gemini"
-
-    raise RuntimeError("هیچ سرویس هوش مصنوعی‌ای پیکربندی نشده (نه OpenAI نه Gemini)")
+    raise RuntimeError("سرویس هوش مصنوعی در دسترس نیست. چند دقیقه دیگه دوباره امتحان کن.")
 
 
 def generate_recipe_image(recipe_name: str) -> bytes | None:

@@ -107,32 +107,44 @@ async def _run_recipe_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, u
 
     wait_msg = await chat.send_message("چند تا ایده پخت جالب داریم برات... 🍳")
 
-    total_calories = sum(item.get("calories", 0) for item in items)
-    recipe_prompt = _build_recipe_prompt(user, items, total_calories)
-    recipes_data, recipe_provider = ai_provider.generate_recipes(recipe_prompt)
-    recipes = recipes_data.get("recipes", [])
+    try:
+        total_calories = sum(item.get("calories", 0) for item in items)
+        recipe_prompt = _build_recipe_prompt(user, items, total_calories)
+        recipes_data, recipe_provider = ai_provider.generate_recipes(recipe_prompt)
+        recipes = recipes_data.get("recipes", [])
 
-    if recipes:
-        db.log_recipe(user_id, recipes[0]["name"], recipes[0].get("calories", 0), provider=recipe_provider)
+        if not recipes:
+            await wait_msg.edit_text("الان نتونستم ایده پختی پیدا کنم. چند دقیقه دیگه دوباره امتحان کن 🙏")
+            return
 
-    message = "🍽️ *پیشنهادهای غذایی:*\n\n"
-    keyboard = []
-    for i, recipe in enumerate(recipes[:3]):
-        message += (
-            f"*{i + 1}. {recipe['name']}*\n"
-            f"🔥 {recipe['calories']} کالری | 💪 {recipe['protein']}گ پروتئین | ⏱ {recipe['time']} دقیقه\n"
-            f"✨ {recipe['why_good']}\n\n"
+        if recipes:
+            db.log_recipe(user_id, recipes[0]["name"], recipes[0].get("calories", 0), provider=recipe_provider)
+
+        message = "🍽️ *پیشنهادهای غذایی:*\n\n"
+        keyboard = []
+        for i, recipe in enumerate(recipes[:3]):
+            message += (
+                f"*{i + 1}. {recipe['name']}*\n"
+                f"🔥 {recipe['calories']} کالری | 💪 {recipe['protein']}گ پروتئین | ⏱ {recipe['time']} دقیقه\n"
+                f"✨ {recipe['why_good']}\n\n"
+            )
+            keyboard.append([InlineKeyboardButton(f"دستور پخت {recipe['name']} 👨‍🍳", callback_data=f"recipe_{i}")])
+
+        context.user_data["last_recipes"] = recipes
+        context.user_data["last_recipe_provider"] = recipe_provider
+        context.user_data["last_items"] = items
+
+        if user["usage_count"] >= 3 and not user["is_subscribed"]:
+            keyboard.append([InlineKeyboardButton("🌟 اشتراک ویژه", callback_data="subscribe")])
+
+        await wait_msg.edit_text(message, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    except Exception as e:
+        logger.error(f"Recipe flow failed for user {user_id}: {e}", exc_info=True)
+        await wait_msg.edit_text(
+            "الان سرویس هوش مصنوعی شلوغه یا در دسترس نیست 😔\n\n"
+            "۱۰–۲۰ ثانیه دیگه دوباره «می‌خوای بپزی؟» رو بزن."
         )
-        keyboard.append([InlineKeyboardButton(f"دستور پخت {recipe['name']} 👨‍🍳", callback_data=f"recipe_{i}")])
-
-    context.user_data["last_recipes"] = recipes
-    context.user_data["last_recipe_provider"] = recipe_provider
-    context.user_data["last_items"] = items
-
-    if user["usage_count"] >= 3 and not user["is_subscribed"]:
-        keyboard.append([InlineKeyboardButton("🌟 اشتراک ویژه", callback_data="subscribe")])
-
-    await wait_msg.edit_text(message, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 # ---------- شروع و پروفایل ----------
