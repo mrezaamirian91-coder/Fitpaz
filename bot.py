@@ -42,22 +42,10 @@ async def _edit_message(query, text, reply_markup=None, parse_mode="Markdown"):
 
 
 def _format_wow_caption(vision_data: dict, untagged: list) -> str:
-    totals = vision_data.get("totals", {})
-    cal = totals.get("calories", 0)
-    protein = totals.get("protein_g", 0)
-    carbs = totals.get("carbs_g", 0)
-    fat = totals.get("fat_g", 0)
-
-    caption = (
-        f"🔥 *{cal}* کالری\n\n"
-        f"💪 پروتئین: *{protein}* گرم\n"
-        f"🍞 کربوهیدرات: *{carbs}* گرم\n"
-        f"🥑 چربی: *{fat}* گرم"
-    )
     extra = image_overlay.format_untagged_lines(untagged)
     if extra:
-        caption += f"\n\n{extra}"
-    return caption
+        return extra
+    return "📸 عکس بعدی رو هم بفرست!"
 
 
 def _build_recipe_prompt(user: dict, items: list, total_calories: int) -> str:
@@ -404,7 +392,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             provider=vision_provider,
         )
 
-        tagged_bytes, untagged = image_overlay.create_tagged_image(photo_bytes, items)
+        tagged_bytes, untagged = image_overlay.create_tagged_image(
+            photo_bytes, items, totals=vision_data.get("totals")
+        )
         caption = _format_wow_caption(vision_data, untagged)
 
         context.user_data["last_items"] = items
