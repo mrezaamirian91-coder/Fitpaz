@@ -351,12 +351,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pending_invite:
         photo_file_id = update.message.photo[-1].file_id
         db.mark_share_responded(pending_invite["id"], photo_file_id=photo_file_id)
-        await update.message.reply_text(
-            "چه عکس قشنگی! 😍\n\n"
-            "به‌زودی همینجا یه کارت باحال هم برات می‌سازیم که بتونی به اشتراک بگذاری. "
-            "فعلاً همین لذت بردن از غذات کافیه 🍽️"
-        )
-        return
+        context.user_data["from_share_invite"] = True
 
     allowed, rate_msg = db.check_photo_rate_limit(user_id)
     if not allowed:
@@ -396,6 +391,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             photo_bytes, items, totals=vision_data.get("totals")
         )
         caption = _format_wow_caption(vision_data, untagged)
+        if context.user_data.pop("from_share_invite", False):
+            caption += "\n\n📲 *این کارت رو می‌تونی توی استوری به اشتراک بذاری!*"
 
         context.user_data["last_items"] = items
         context.user_data["last_vision_data"] = vision_data
@@ -432,7 +429,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ مطمئن نبودم از بعضی موارد. اگه چیزی اشتباهه بگو.")
 
     except Exception as e:
-        logger.error(f"Error processing photo: {e}")
+        logger.error(f"Error processing photo for user {user_id}: {e}", exc_info=True)
         await wait_msg.edit_text("مشکلی پیش اومد. دوباره امتحان کن 🙏")
 
 
