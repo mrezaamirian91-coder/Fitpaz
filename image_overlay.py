@@ -13,16 +13,14 @@ BRAND_TEXT = "فیت پز"
 MIN_IMAGE_WIDTH = 1200
 
 FONT_BOLD_CANDIDATES = [
-    Path(__file__).parent / "fonts" / "Vazirmatn-Bold.ttf",
-    "C:/Windows/Fonts/tahomabd.ttf",
-    "C:/Windows/Fonts/arialbd.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    Path(__file__).parent / "fonts" / "Vazirmatn-Bold.ttf",      # بهترین گزینه، اگه بعداً فونت فارسی واقعی اضافه کردی
+    Path(__file__).parent / "fonts" / "DejaVuSans-Bold.ttf",     # تضمینی - همراه ریپو میاد، به سیستم‌عامل وابسته نیست
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",      # اگه سیستم میزبان داشت
 ]
 
 FONT_REGULAR_CANDIDATES = [
     Path(__file__).parent / "fonts" / "Vazirmatn-Regular.ttf",
-    "C:/Windows/Fonts/tahoma.ttf",
-    "C:/Windows/Fonts/arial.ttf",
+    Path(__file__).parent / "fonts" / "DejaVuSans.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 ]
 

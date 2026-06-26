@@ -52,8 +52,50 @@ def _safe_int(value, default: int = 0) -> int:
     return default
 
 
+def _name_key(name: str) -> str:
+    """نام رو برای مقایسه نرمالایز می‌کنه (حذف نیم‌فاصله/فاصله‌ی اضافه) تا "تخم‌مرغ" و "تخم مرغ"
+    به اشتباه دو ماده‌ی متفاوت حساب نشن."""
+    return name.replace("\u200c", "").replace(" ", "").strip().lower()
+
+
+def _merge_duplicate_items(items: list) -> list:
+    """اگه چند نمونه از یک ماده‌ی یکسان جدا جدا تشخیص داده شده باشن (مثلاً دو تخم‌مرغ توی دو
+    گوشه‌ی عکس، که چون هرکدوم موقعیت خودشون رو دارن جدا برمی‌گردن)، یکی‌شون می‌کنیم تا
+    یک تگ واحد با کالری/مقدار مجموع نشون داده شه - نه چند تگ پخش‌شده برای یک نوع ماده."""
+    merged: dict = {}
+    order: list = []
+
+    for item in items:
+        key = _name_key(item["name"])
+        if key not in merged:
+            entry = dict(item)
+            entry["_count"] = 1
+            merged[key] = entry
+            order.append(key)
+        else:
+            existing = merged[key]
+            existing["calories"] += item.get("calories", 0)
+            existing["protein_g"] += item.get("protein_g", 0)
+            existing["carbs_g"] += item.get("carbs_g", 0)
+            existing["fat_g"] += item.get("fat_g", 0)
+            existing["_count"] += 1
+            # موقعیت/تگ همون اولی رو نگه می‌داریم تا روی یکی از نمونه‌های واقعی بنشینه،
+            # نه وسط خالی بین‌شون
+
+    result = []
+    for key in order:
+        entry = merged[key]
+        if entry["_count"] > 1:
+            count_fa = str(entry["_count"]).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+            entry["quantity"] = f"{count_fa} مورد"
+        entry.pop("_count", None)
+        result.append(entry)
+    return result
+
+
 def _normalize_vision_data(data: dict) -> dict:
-    """اطمینان از اینکه هر آیتم name/quantity/calories تمیز و قابل‌اعتماد داره."""
+    """اطمینان از اینکه هر آیتم name/quantity/calories تمیز و قابل‌اعتماد داره،
+    و نمونه‌های تکراری یک ماده با هم یکی می‌شن."""
     items = data.get("items", [])
     normalized = []
     for item in items:
@@ -69,6 +111,8 @@ def _normalize_vision_data(data: dict) -> dict:
         if isinstance(box, list) and len(box) == 4:
             entry["box_2d"] = box
         normalized.append(entry)
+
+    normalized = _merge_duplicate_items(normalized)
     data["items"] = normalized
 
     totals = data.get("totals") or {}
@@ -92,6 +136,9 @@ def _normalize_vision_data(data: dict) -> dict:
 WOW_VISION_PROMPT = """این عکس غذا یا مواد غذایی است — ممکن است مواد خام باشد یا یک وعده/بشقاب آماده.
 هر ماده یا بخش قابل‌شناسایی را با مقدار تخمینی، کالری و ماکرو (گرم) برگردان.
 برای غذاهای ترکیبی ایرانی (مثل قورمه‌سبزی با برنج)، بخش‌های منطقی جدا کن (خورش، برنج، سالاد و...).
+
+مهم: اگر چند نمونه از یک نوع ماده‌ی یکسان در عکس هست (مثلاً دو تخم‌مرغ، سه گردو)، آن‌ها را
+به‌صورت یک آیتم واحد با مقدار/کالری مجموع برگردان - نه چند آیتم جدا برای هر نمونه.
 
 موقعیت هر آیتم روی عکس را با box_2d بده: [ymin, xmin, ymax, xmax] نرمال‌شده ۰ تا ۱۰۰۰.
 اگر موقعیت دقیق ممکن نیست، box_2d را حذف کن (فقط همان آیتم).
